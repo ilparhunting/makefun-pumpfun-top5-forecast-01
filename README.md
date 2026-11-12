@@ -45,12 +45,25 @@ cut, pool coins first):
   takes it.
 
 Place probabilities come from the simulation's counts, floored at 0.002
-per coin and capped at 0.98 named per place. Size distributions are the
-simulation's histogram mixed 70/30 with a normal fit to it (sd floored
-by horizon, capped at 0.45), named to 0.92 per place. Every parameter is
-documented where it is set in `main.py`; the numbers were chosen from the
-rehearsal history's own statistics and from how pump.fun coins behave,
-not tuned to any answer.
+per coin and capped at 0.98 named per place. **Plus p=0 rows:** after
+the named rows, up to 70 further simulated coins per place are named at
+p=0 (those whose estimated place p is below 0.002, in sim order — cap
+at cut desc, pool first). A p=0 row is legal (the grader's parser
+accepts p in [0, 1]) and counts as named for the scorer's unnamed
+count, so it concentrates the place's unnamed share on fewer chart
+coins; it scores the floor (−9.21) only if that coin actually takes
+the place. The expected trade is favourable because the unnamed share
+is large (~0.45–0.50 per place) while each zeroed coin's true place
+probability is under 0.002. Backtested 2026-11-12 on 4 cuts / 10
+reads: the zeroing alone gains +0.53 / +0.95 / +0.43 / +0.69 per read,
+with 0 zeroed hits in 25 place-outcomes checked directly. Size
+distributions are the simulation's histogram (pure; the 70/30 normal
+mix was dropped after backtesting showed the pure histogram scores
++0.19 to +0.45 better per read at 3 of 4 cuts — the normal fit's main
+effect was diluting the peak bins), named to 0.92 per place. Every
+parameter is documented where it is set in `main.py`; the numbers were
+chosen from the rehearsal history's own statistics and from how
+pump.fun coins behave, not tuned to any answer.
 
 ## Running it
 
@@ -77,15 +90,43 @@ Backtest on the rehearsal history (the practice answer's own reads are
 
 | cut | reads | this entry | house baseline |
 |-----|-------|-----------|----------------|
-| 20:30 | 20:40, 20:50 | −27.23 | −33.48 |
-| 20:20 | 20:30, 20:40, 20:50 | −39.15 | −49.96 |
-| 20:40 | 20:50 | −23.20 | −29.87 |
+| 20:10 | 20:20, 20:30, 20:40, 20:50 | −36.83 | −59.17 |
+| 20:30 | 20:40, 20:50 | −26.45 | −33.48 |
+| 20:20 | 20:30, 20:40, 20:50 | −38.20 | −49.96 |
+| 20:40 | 20:50 | −22.31 | −29.87 |
 
-The entry beats the baseline at every cut, by 6–11 log points, on both
+The entry beats the baseline at every cut, by 7–22 log points, on both
 order and sizes. (The house baseline scores −40.41 on the practice
 forecast over its seven reads; this entry's practice score cannot be
 computed locally because the practice answer reads are not in the
 rehearsal input.)
+
+## Improvement round, 2026-11-12 ~16:40–17:00 WITA (after the first submit)
+
+Sofya asked whether the submitted entry could be improved for top 1.
+A second worker re-read the canonical scorer (`ranked.ts`) and tested
+five ideas in the backtest, each measured on the same 4 cuts / 10
+reads (env-var flags in `main.py`, defaults = the improved behaviour):
+
+- **p=0 rows (ADOPTED):** +0.53 / +0.95 / +0.43 / +0.69 per read at the
+  four cuts (zeroing alone). Verified legal: `parseRanked` accepts
+  p = 0, and `placeProbability` treats a p=0 row as named (it leaves
+  the unnamed count), so the unnamed share concentrates on fewer chart
+  coins. Risk checked directly: 0 zeroed coins took a place in 25
+  place-outcomes.
+- **Pure-histogram sizes (ADOPTED):** size weight 0.7 → 1.0 gains
+  +0.26 / 0.00 / +0.45 / +0.19 per read.
+- **5,000 paths (REJECTED):** no gain over 1,000 (mixed ±0.2, noise);
+  kept at 1,000, runtime ~5 s.
+- **Naming threshold 0.001 / 0.005 (REJECTED):** no material change
+  vs 0.002.
+- Combined adopted change (zeroing + pure histogram): **+0.78 to
+  +0.94 per read at every cut** vs the submitted version
+  (−27.23/−39.15/−23.20/−37.71 → −26.45/−38.20/−22.31/−36.83).
+  Re-verified after hard-coding: determinism (two runs byte-identical),
+  format (79–100 rows/place, ≤100; 34 KB; all mints in history),
+  long-horizon smoke test (7 h/13 h reads: unnamed 0.43–0.49, size
+  peaks 4.15–4.95 log SOL, bin 81 ≤ 0.025).
 
 Full-history run: ~6 s, ~11 KB forecast, byte-identical across runs.
 Format validated: every named mint is in the history, per-place sums
@@ -111,8 +152,7 @@ Format validated: every named mint is in the history, per-place sums
 
 ## Deliberately not done
 
-The rules allow naming a coin at p 0, which takes it out of a place's
-unnamed share without spending mass. That would raise the score when a
-newcomer takes a place, but it costs the floor (−9.21) if that coin ever
-holds the place, and the model's per-coin place probabilities for small
-coins are not precise enough to use it safely. It is left out.
+Nothing currently: the p=0 naming trick described here in the first
+version was adopted in the improvement round above (2026-11-12), after
+it was verified legal in `ranked.ts` and measured at +0.53 to +0.95
+per read in the backtest with 0 zeroed hits in 25 place-outcomes.

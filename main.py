@@ -57,9 +57,27 @@ from datetime import datetime, timezone
 # --------------------------------------------------------------------------
 # Tunables (documented; see the analysis in README.md)
 # --------------------------------------------------------------------------
-N_PATHS = 1000           # Monte Carlo paths per horizon
+N_PATHS = int(os.environ.get("PF_PATHS", "1000"))  # Monte Carlo paths per horizon
 MAX_SIM_COINS = 150      # coins simulated (top by cap at the cut, pool first)
-NAME_MIN_P = 0.002       # name a coin at a place only at p >= this
+NAME_MIN_P = float(os.environ.get("PF_NAME_MIN_P", "0.002"))  # name a coin at a place only at p >= this
+# p=0 zeroing: name up to ZERO_MAX extra simulated coins per place at
+# p=0, those whose estimated place p is below ZERO_P_MAX, in sim order
+# (cap at cut desc, pool first).  A p=0 row counts as named for the
+# scorer's unnamed count (ranked.ts placeProbability: a named id returns
+# its own p, otherwise the place's unnamed mass is shared by the chart's
+# unnamed ids), so it concentrates the place's unnamed share on fewer
+# chart coins; it scores the floor (-9.21) only if that coin takes the
+# place.  Backtested 2026-11-12 (4 cuts, 10 reads): zeroing alone gains
+# +0.53/+0.95/+0.43/+0.69 per read; combined with pure-histogram sizes
+# the gain is +0.78 to +0.94 per read at every cut; 0 zeroed hits in 25
+# place-outcomes.  Default 70.
+ZERO_MAX = int(os.environ.get("PF_ZERO_MAX", "70"))
+ZERO_P_MAX = float(os.environ.get("PF_ZERO_P_MAX", "0.002"))
+# Histogram weight in the size mix.  Backtested 2026-11-12: pure
+# histogram (1.0) beats the 0.7/0.3 normal mix by +0.19 to +0.45 per
+# read at 3 of 4 cuts (0.00 at the fourth); the normal fit's main effect
+# is diluting the peak bins.  Default 1.0.
+SIZE_HIST_W = float(os.environ.get("PF_SIZE_HIST_W", "1.0"))
 MAX_NAMED_PER_PLACE = 0.98   # never name more than this of a place
 SIZE_NAMED_TOTAL = 0.92      # name this much of each place's size mass
 SIZE_MIN_P = 0.0005      # drop size bins below this (mass goes unnamed)
@@ -405,7 +423,7 @@ def floor6(x):
     return math.floor(x * 1000000.0) / 1000000.0
 
 
-def build_forecast(task, place_counts, size_hist, newcomer_wins, total, mean_horizon_h):
+def build_forecast(task, sim, place_counts, size_hist, newcomer_wins, total, mean_horizon_h):
     places = int(task.get("places", 5))
     edges = task["size"]["edges"]
     n_bins = len(edges) + 1
@@ -433,6 +451,19 @@ def build_forecast(task, place_counts, size_hist, newcomer_wins, total, mean_hor
             scale = MAX_NAMED_PER_PLACE / s
             rows = [{"mint": r["mint"], "place": r["place"], "p": floor6(r["p"] * scale)} for r in rows]
             rows = [r for r in rows if r["p"] > 0.0]
+        if ZERO_MAX > 0:
+            named_mints = {r["mint"] for r in rows}
+            added = 0
+            for c in sim:
+                if added >= ZERO_MAX or len(rows) >= 100:
+                    break
+                if c.mint in named_mints:
+                    continue
+                if counts.get(c.mint, 0) / total >= ZERO_P_MAX:
+                    continue
+                rows.append({"mint": c.mint, "place": k + 1, "p": 0})
+                named_mints.add(c.mint)
+                added += 1
         probabilities.extend(rows)
         pick = None
         for mint, _n in ranked:
@@ -481,7 +512,7 @@ def build_forecast(task, place_counts, size_hist, newcomer_wins, total, mean_hor
             lo = float("-inf") if b == 0 else edges[b - 1]
             hi = float("inf") if b == n_bins - 1 else edges[b]
             p_norm = phi((hi - mean) / sd) - phi((lo - mean) / sd)
-            p = 0.7 * p_hist + 0.3 * p_norm
+            p = SIZE_HIST_W * p_hist + (1.0 - SIZE_HIST_W) * p_norm
             p = floor6(p * SIZE_NAMED_TOTAL)
             if p >= SIZE_MIN_P:
                 rows.append({"place": k + 1, "bin": b, "p": p})
@@ -517,11 +548,11 @@ def main():
         h = (r - cut).total_seconds() / 3600.0
         horizons_h.append(max(h, 0.05))
     edges = task["size"]["edges"]
-    _sim, place_counts, size_hist, newcomer_wins, total = run_monte_carlo(
+    sim, place_counts, size_hist, newcomer_wins, total = run_monte_carlo(
         coins, horizons_h, edges
     )
     mean_h = sum(horizons_h) / len(horizons_h)
-    forecast = build_forecast(task, place_counts, size_hist, newcomer_wins, total, mean_h)
+    forecast = build_forecast(task, sim, place_counts, size_hist, newcomer_wins, total, mean_h)
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, task.get("output", "forecast.json"))
     with open(out_path, "w", encoding="utf-8") as f:
