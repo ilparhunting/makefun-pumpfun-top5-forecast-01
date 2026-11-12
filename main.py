@@ -70,17 +70,33 @@ NAME_MIN_P = float(os.environ.get("PF_NAME_MIN_P", "0.002"))  # name a coin at a
 # place.  Backtested 2026-11-12 (4 cuts, 10 reads): zeroing alone gains
 # +0.53/+0.95/+0.43/+0.69 per read; combined with pure-histogram sizes
 # the gain is +0.78 to +0.94 per read at every cut; 0 zeroed hits in 25
-# place-outcomes.  Default 70.
-ZERO_MAX = int(os.environ.get("PF_ZERO_MAX", "70"))
+# place-outcomes.  Round 2: default 95 (backtested 88 +0.069, 95 +0.082
+# per read vs 70; the 100-row cap binds above that).
+ZERO_MAX = int(os.environ.get("PF_ZERO_MAX", "95"))
 ZERO_P_MAX = float(os.environ.get("PF_ZERO_P_MAX", "0.002"))
+# Round 2 (2026-11-12): zeroing order. "sim" = sim order (cap desc, pool
+# first, as in v2); "lowp" = candidates sorted by estimated place count
+# ascending, so the coins least likely to actually take the place are
+# zeroed first (same denominator reduction, lower hit risk).
+ZERO_ORDER = os.environ.get("PF_ZERO_ORDER", "sim")
 # Histogram weight in the size mix.  Backtested 2026-11-12: pure
 # histogram (1.0) beats the 0.7/0.3 normal mix by +0.19 to +0.45 per
 # read at 3 of 4 cuts (0.00 at the fourth); the normal fit's main effect
 # is diluting the peak bins.  Default 1.0.
 SIZE_HIST_W = float(os.environ.get("PF_SIZE_HIST_W", "1.0"))
 MAX_NAMED_PER_PLACE = 0.98   # never name more than this of a place
-SIZE_NAMED_TOTAL = 0.92      # name this much of each place's size mass
-SIZE_MIN_P = 0.0005      # drop size bins below this (mass goes unnamed)
+# Round 2 (2026-11-12): size mass named per place (v2 default 0.92 -> 0.98).
+# Backtested: 0.95 +0.160, 0.98 +0.316, 0.99 +0.367, 1.0 +0.417 per read
+# vs v2 — but 1.0 leaves no unnamed fallback, so one winner in an
+# unnamed bin would score the -9.21 floor; at the final's 7-13 h
+# horizons the size distribution is wider than in the 10-50 min
+# backtest, so 0.98 is kept as the safe choice (0.99/1.0 gains are a
+# pure rescaling of named bins).
+SIZE_NAMED_TOTAL = float(os.environ.get("PF_SIZE_NAMED_TOTAL", "0.98"))
+# Round 2: 3-bin kernel smoothing of the size histogram, 0 = off.
+# p_sm[b] = (1-2a)*p[b] + a*p[b-1] + a*p[b+1] (edges use the single neighbour).
+SIZE_SMOOTH = float(os.environ.get("PF_SIZE_SMOOTH", "0"))
+SIZE_MIN_P = float(os.environ.get("PF_SIZE_MIN_P", "0.0005"))  # drop size bins below this (mass goes unnamed)
 FLOOR_LOG = 1.45         # log10 SOL of a dead coin (the curve floor)
 NEWCOMERS_PER_HOUR = 480.0  # coins entering the chart per hour (measured)
 NEWCOMER_TOP = 6         # how many of the newcomer field's top caps to draw
@@ -101,12 +117,31 @@ MARKET_SD_TAU_H = 2.0   # hours over which its sd saturates
 
 # Pool (graduated) coins.  Hot pool coins survive ~14/15 per 10 minutes
 # in the rehearsal, so the crash hazard is small but real.
-POOL_CRASH_PER_STEP = 0.02     # hazard a pool coin dies in one 10-min step
-POOL_EXCESS_RATE = 0.30        # log/hour excess drift for a coin at full momentum
+# Round 2: crash hazards (v2 defaults 0.02 pool / 0.20 curve).
+POOL_CRASH_PER_STEP = float(os.environ.get("PF_POOL_CRASH", "0.02"))
+# Round 2 (2026-11-12): pool excess drift rate (v2 default 0.30 -> 0).
+# Backtested 0.45 -0.235, 0.30 baseline, 0.15 +0.122, 0.075 +0.124,
+# 0 +0.185 per read: the momentum drift over-ranks climbing pool coins.
+POOL_EXCESS_RATE = float(os.environ.get("PF_POOL_EXCESS", "0"))
 POOL_EXCESS_TAU_H = 2.0        # horizon over which the excess drift applies
 
 # Curve (bonding) coins, per 10 minutes.
-CURVE_CRASH_PER_STEP = 0.20    # hazard a hot curve coin collapses in a step
+# Round 2: curve crash hazard (v2 default 0.20).
+CURVE_CRASH_PER_STEP = float(os.environ.get("PF_CURVE_CRASH", "0.20"))
+# Round 2 (2026-11-12): newcomer-only crash hazard (v2: newcomers used
+# the same 0.20 as known curve coins). Backtested newcomers-only:
+# 0.10 +0.437, 0.05 +0.599, 0.0 +0.748 per read vs v2, while known-coins-
+# only at 0.05 gives -0.025 (no gain). Mechanism, verified in the data:
+# 64% of backtest place-winners (32/50) were NOT in the cut history
+# (true newcomers, 63-99 entering per 10 min, top caps 2.92-3.47), so
+# the unnamed mass must be large; and the crash rate is cap-dependent
+# (measured: 38% floored in 10 min at cap 1.5-2.0, 20% at 2.0-2.5,
+# ~0% above 2.5) while the newcomer field is selected for high
+# first-appearance caps. 0.05 is adopted, NOT 0.0: at the final's
+# 7-13 h horizons a 0.0 rate would let 13-hour-old newcomers survive
+# at full caps, which the short-horizon backtest cannot see and which
+# is clearly wrong; 0.05 still kills ~86% of 6.5 h-old newcomers.
+NEWCOMER_CRASH = float(os.environ.get("PF_NEWCOMER_CRASH", "0.05"))
 CURVE_GRAD_PER_STEP = 0.03     # hazard a hot curve coin graduates in a step
 CURVE_GRAD_MAX = 0.25          # graduation chance saturates at this
 CURVE_GRAD_JUMP_SD = 0.30      # sd of the log jump on graduation
@@ -225,12 +260,13 @@ def newcomer_top_caps(rng, count, horizon_h, common):
     for u in us:
         base = newcomer_cap_from_u(u)
         age = rng.uniform() * horizon_h
-        out.append(curve_terminal_cap(rng, base, 0.0, age, common))
+        out.append(curve_terminal_cap(rng, base, 0.0, age, common,
+                                      crash=NEWCOMER_CRASH if NEWCOMER_CRASH >= 0 else None))
     out.sort(reverse=True)
     return out[:NEWCOMER_TOP]
 
 
-def curve_terminal_cap(rng, cap0, momentum, horizon_h, common):
+def curve_terminal_cap(rng, cap0, momentum, horizon_h, common, crash=None):
     """One draw of a curve (bonding) coin's log-cap after `horizon_h`
     hours, starting from `cap0`.  Most curve coins collapse; a few
     graduate to a pool and keep growing."""
@@ -238,7 +274,8 @@ def curve_terminal_cap(rng, cap0, momentum, horizon_h, common):
         horizon_h = 0.05
     steps = horizon_h * 6.0
     p_grad = min(CURVE_GRAD_MAX, 1.0 - (1.0 - CURVE_GRAD_PER_STEP) ** steps)
-    p_crash = 1.0 - (1.0 - CURVE_CRASH_PER_STEP) ** steps
+    c = CURVE_CRASH_PER_STEP if crash is None else crash
+    p_crash = 1.0 - (1.0 - c) ** steps
     u = rng.uniform()
     if u < p_grad:
         base = cap0 + CURVE_GRAD_JUMP_SD * rng.normal()
@@ -453,14 +490,15 @@ def build_forecast(task, sim, place_counts, size_hist, newcomer_wins, total, mea
             rows = [r for r in rows if r["p"] > 0.0]
         if ZERO_MAX > 0:
             named_mints = {r["mint"] for r in rows}
+            cands = [(counts.get(c.mint, 0), i, c) for i, c in enumerate(sim)
+                     if c.mint not in named_mints
+                     and counts.get(c.mint, 0) / total < ZERO_P_MAX]
+            if ZERO_ORDER == "lowp":
+                cands.sort(key=lambda t: (t[0], t[1]))
             added = 0
-            for c in sim:
+            for _n, _i, c in cands:
                 if added >= ZERO_MAX or len(rows) >= 100:
                     break
-                if c.mint in named_mints:
-                    continue
-                if counts.get(c.mint, 0) / total >= ZERO_P_MAX:
-                    continue
                 rows.append({"mint": c.mint, "place": k + 1, "p": 0})
                 named_mints.add(c.mint)
                 added += 1
@@ -507,8 +545,17 @@ def build_forecast(task, sim, place_counts, size_hist, newcomer_wins, total, mea
         sd = min(sd, 0.45)
         rows = []
         s = 0.0
+        sm = [hist[b] / total for b in range(n_bins)]
+        if SIZE_SMOOTH > 0:
+            a = SIZE_SMOOTH
+            sm = [
+                (1.0 - 2.0 * a) * sm[b]
+                + (a * sm[b - 1] if b > 0 else a * sm[b])
+                + (a * sm[b + 1] if b < n_bins - 1 else a * sm[b])
+                for b in range(n_bins)
+            ]
         for b in range(n_bins):
-            p_hist = hist[b] / total
+            p_hist = sm[b]
             lo = float("-inf") if b == 0 else edges[b - 1]
             hi = float("inf") if b == n_bins - 1 else edges[b]
             p_norm = phi((hi - mean) / sd) - phi((lo - mean) / sd)
